@@ -1,6 +1,7 @@
 package rabbitmq_producer
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/gomessguii/logger"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+const publishConfirmTimeout = 30 * time.Second
 
 type rabbitMQProducer struct {
 	conn               *amqp.Connection
@@ -123,6 +126,38 @@ func (p *rabbitMQProducer) ensureConnection() error {
 	return nil
 }
 
+// The caller closes the channel right after publishing, so the broker confirm
+// must be awaited here; otherwise large payloads (history sync batches) are
+// left unconfirmed when the channel stops.
+func publishAndConfirm(channel *amqp.Channel, queueName string, payload []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), publishConfirmTimeout)
+	defer cancel()
+
+	confirmation, err := channel.PublishWithDeferredConfirmWithContext(
+		ctx,
+		"",        // exchange
+		queueName, // routing key
+		false,     // mandatory
+		false,     // immediate
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         payload,
+			DeliveryMode: amqp.Persistent, // Garante persistência da mensagem
+		})
+	if err != nil {
+		return err
+	}
+
+	acked, err := confirmation.WaitContext(ctx)
+	if err != nil {
+		return fmt.Errorf("waiting for publish confirm: %w", err)
+	}
+	if !acked {
+		return fmt.Errorf("broker nacked publish to %s", queueName)
+	}
+	return nil
+}
+
 func (p *rabbitMQProducer) publishWithRetry(
 	channel *amqp.Channel,
 	queueName string,
@@ -131,16 +166,7 @@ func (p *rabbitMQProducer) publishWithRetry(
 ) error {
 	var err error
 	for i := 0; i < p.maxRetries; i++ {
-		err = channel.Publish(
-			"",        // exchange
-			queueName, // routing key
-			false,     // mandatory
-			false,     // immediate
-			amqp.Publishing{
-				ContentType:  "application/json",
-				Body:         payload,
-				DeliveryMode: amqp.Persistent, // Garante persistência da mensagem
-			})
+		err = publishAndConfirm(channel, queueName, payload)
 
 		if err == nil {
 			return nil
