@@ -403,6 +403,12 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		}
 	}
 
+	// DeviceProps only covers pairing; the handshake ClientPayload reads the
+	// version whatsmeow keeps globally, which stays at its hardcoded default
+	// unless SetWAVersion is called.
+	store.SetWAVersion(store.WAVersionContainer{uint32(version.Major), uint32(version.Minor), uint32(version.Patch)})
+	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Using whatsapp version %s", cd.Instance.Id, store.GetWAVersion().String())
+
 	// 🔒 FIX: Sempre criar logger, mesmo que WaDebug esteja vazio
 	// Usar "INFO" como nível mínimo para garantir que logs importantes apareçam
 	minLevel := w.config.WaDebug
